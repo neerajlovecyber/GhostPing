@@ -44,6 +44,28 @@ export interface SiteAnalytics {
       totalImpressions: number
     }
   }
+  sitemaps: any[]
+  indexedUrls: string[]
+  period: Array<{
+    url: string
+    clicks: number
+    prevClicks: number
+    clicksPercent: number
+    impressions: number
+    impressionsPercent: number
+    prevImpressions: number
+  }>
+  keywords: Array<{
+    keyword: string
+    position: number
+    positionPercent: number
+    prevPosition: number
+    ctr: number
+    ctrPercent: number
+    prevCtr: number
+    clicks: number
+    impressions: number
+  }>
   graph: Array<{
     clicks: number
     impressions: number
@@ -53,9 +75,7 @@ export interface SiteAnalytics {
 
 export interface SiteExpanded extends SiteAnalytics, GoogleSearchConsoleSite {
   nonIndexedPercent: number
-  indexedUrls: any[]
   nonIndexedUrls: SitePage[]
-  sitemaps?: any[]
 }
 
 export interface User {

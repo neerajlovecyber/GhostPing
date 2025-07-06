@@ -34,28 +34,55 @@ export default function DashboardPage() {
 
       const sitesWithAnalytics: SiteExpanded[] = await Promise.all(
         fetchedSites.map(async (site) => {
-          const analyticsResponse = await fetch(`/api/search-console/analytics?siteUrl=${encodeURIComponent(site.siteUrl)}`);
-          if (!analyticsResponse.ok) {
-            console.warn(`Failed to fetch analytics for ${site.siteUrl}: ${analyticsResponse.statusText}`);
-            // Return site with default/empty analytics if fetching fails
+          try {
+            // Fetch analytics data (now includes indexing info)
+            const analyticsResponse = await fetch(`/api/search-console/analytics?siteUrl=${encodeURIComponent(site.siteUrl)}`);
+
+            let analyticsData = { 
+              analytics: { period: { totalClicks: 0, totalImpressions: 0 }, prevPeriod: { totalClicks: 0, totalImpressions: 0 } }, 
+              graph: [],
+              indexedUrls: [],
+              sitemaps: [],
+              period: [],
+              keywords: []
+            };
+
+            if (!analyticsResponse.ok) {
+              const errorText = await analyticsResponse.text();
+              console.warn(`Failed to fetch analytics for ${site.siteUrl}: ${analyticsResponse.statusText}`, errorText);
+            } else {
+              analyticsData = await analyticsResponse.json();
+              console.log(`Analytics data for ${site.siteUrl}:`, analyticsData);
+            }
+
+            // Calculate indexed percentage from the analytics data (like example project)
+            const totalIndexedUrls = analyticsData.indexedUrls?.length || 0;
+            const totalSitemapUrls = analyticsData.sitemaps?.reduce((acc: number, sitemap: any) => acc + (sitemap.contents?.length || 0), 0) || 0;
+            const estimatedTotalUrls = Math.max(totalSitemapUrls, totalIndexedUrls * 1.2, 10);
+            const indexedPercent = estimatedTotalUrls > 0 ? totalIndexedUrls / estimatedTotalUrls : 0;
+
+            return {
+              ...site,
+              analytics: analyticsData.analytics || { period: { totalClicks: 0, totalImpressions: 0 }, prevPeriod: { totalClicks: 0, totalImpressions: 0 } },
+              graph: analyticsData.graph || [],
+              nonIndexedPercent: indexedPercent, // Use calculated percentage from analytics
+              indexedUrls: analyticsData.indexedUrls || [],
+              nonIndexedUrls: [], // Would need additional API call to calculate
+              period: analyticsData.period || [],
+              keywords: analyticsData.keywords || [],
+              sitemaps: analyticsData.sitemaps || [],
+            };
+          } catch (error) {
+            console.error(`Error fetching data for ${site.siteUrl}:`, error);
             return {
               ...site,
               analytics: { period: { totalClicks: 0, totalImpressions: 0 }, prevPeriod: { totalClicks: 0, totalImpressions: 0 } },
               graph: [],
-              nonIndexedPercent: 0, // Default value
-              indexedUrls: [], // Default value
-              nonIndexedUrls: [], // Default value
+              nonIndexedPercent: 0,
+              indexedUrls: [],
+              nonIndexedUrls: [],
             };
           }
-          const analyticsData = await analyticsResponse.json();
-          return {
-            ...site,
-            analytics: analyticsData.analytics || { period: { totalClicks: 0, totalImpressions: 0 }, prevPeriod: { totalClicks: 0, totalImpressions: 0 } },
-            graph: analyticsData.graph || [],
-            nonIndexedPercent: null, // Placeholder removed, needs actual calculation
-            indexedUrls: [], // Placeholder removed
-            nonIndexedUrls: [], // Placeholder removed
-          };
         })
       );
       setSites(sitesWithAnalytics);

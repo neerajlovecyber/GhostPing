@@ -2,26 +2,34 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { google, searchconsole_v1 } from 'googleapis';
 import { requireAuth } from '../../../lib/google';
 
-// Helper function to format dates for the API
-function formatDate(date: Date = new Date()): string {
-  return `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`;
+function formatDate(date: Date = new Date()) {
+  return `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`
 }
 
-// Define a basic type for analytics data, simplified from the example app
-interface SiteAnalytics {
-  period: {
-    totalClicks: number;
-    totalImpressions: number;
-  };
-  prevPeriod: {
-    totalClicks: number;
-    totalImpressions: number;
-  };
-  graph: Array<{
-    clicks: number;
-    impressions: number;
-    time: string;
-  }>;
+function normalizeSiteUrl(siteUrl: string) {
+  return siteUrl.replace('sc-domain:', 'https://').replace(/\/$/, '')
+}
+
+function percentDifference(current: number, previous: number) {
+  if (previous === 0) return current > 0 ? 100 : 0
+  return Math.round(((current - previous) / previous) * 100)
+}
+
+async function recursiveQuery(api: searchconsole_v1.Searchconsole, query: searchconsole_v1.Params$Resource$Searchanalytics$Query, maxRows: number, page: number = 1, rows: searchconsole_v1.Schema$ApiDataRow[] = []) {
+  const rowLimit = query.requestBody?.rowLimit || maxRows
+  const res = await api.searchanalytics.query({
+    ...query,
+    requestBody: {
+      ...query.requestBody,
+      startRow: (page - 1) * rowLimit,
+    },
+  })
+  // add res rows
+  rows.push(...res.data.rows!)
+  if (res.data.rows!.length === rowLimit && res.data.rows!.length < maxRows && page <= 4)
+    await recursiveQuery(api, query, maxRows, page + 1, rows)
+
+  return { data: { rows } }
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -33,67 +41,170 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const oauth2Client = await requireAuth(req, res);
-    const searchconsole = google.searchconsole({ version: 'v1', auth: oauth2Client });
+    const api = google.searchconsole({ version: 'v1', auth: oauth2Client });
 
-    const periodDays = 30; // Default to 30 days
-    const startPeriod = new Date();
-    startPeriod.setDate(new Date().getDate() - periodDays);
-    const startPrevPeriod = new Date();
-    startPrevPeriod.setDate(new Date().getDate() - periodDays * 2);
-    const endPrevPeriod = new Date();
-    endPrevPeriod.setDate(new Date().getDate() - periodDays - 1);
+    const periodRange = '28d'; // Match example project default
+    const periodDays = Number.parseInt(periodRange.replace('d', ''))
+    const startPeriod = new Date()
+    startPeriod.setDate(new Date().getDate() - periodDays)
+    const startPrevPeriod = new Date()
+    startPrevPeriod.setDate(new Date().getDate() - periodDays * 2)
+    const endPrevPeriod = new Date()
+    endPrevPeriod.setDate(new Date().getDate() - periodDays - 1)
 
-    const [periodData, prevPeriodData, graphData] = await Promise.all([
-      searchconsole.searchanalytics.query({
+    const requestBody = {
+      dimensions: ['page'],
+      type: 'web',
+      aggregationType: 'byPage',
+    }
+    const rowLimit = 25000
+    const maxRows = 1000
+    
+    const [keywordsPeriod, keywordsPrevPeriod, period, prevPeriod, graph] = (await Promise.all([
+      // do a query based on keywords instead of dates
+      // period
+      await recursiveQuery(api, {
         siteUrl,
         requestBody: {
+          ...requestBody,
+          // 1 month
           startDate: formatDate(startPeriod),
           endDate: formatDate(),
-          type: 'web',
+          // keywords
+          dimensions: ['query'],
+          rowLimit,
         },
-      }),
-      searchconsole.searchanalytics.query({
+      }, maxRows),
+      // prev period
+      api.searchanalytics.query({
         siteUrl,
         requestBody: {
+          ...requestBody,
+          // 1 month
           startDate: formatDate(startPrevPeriod),
           endDate: formatDate(endPrevPeriod),
-          type: 'web',
+          // keywords
+          dimensions: ['query'],
+          rowLimit,
         },
       }),
-      searchconsole.searchanalytics.query({
+      await recursiveQuery(api, {
         siteUrl,
         requestBody: {
-          startDate: formatDate(startPrevPeriod), // Fetch graph data for a longer period
+          ...requestBody,
+          // 1 month
+          startDate: formatDate(startPeriod),
           endDate: formatDate(),
-          dimensions: ['date'],
-          type: 'web',
+          rowLimit,
+        },
+      }, maxRows),
+      api.searchanalytics.query({
+        siteUrl,
+        requestBody: {
+          ...requestBody,
+          startDate: formatDate(startPrevPeriod),
+          endDate: formatDate(endPrevPeriod),
+          rowLimit,
         },
       }),
-    ]);
-
-    const periodRows = periodData.data.rows || [];
-    const prevPeriodRows = prevPeriodData.data.rows || [];
-    const graphRows = graphData.data.rows || [];
-
-    const analytics: SiteAnalytics = {
+      // do another query but do it based on clicks / impressions for the day
+      api.searchanalytics.query({
+        siteUrl,
+        requestBody: {
+          ...requestBody,
+          startDate: formatDate(startPrevPeriod),
+          endDate: formatDate(),
+          dimensions: ['date'],
+          rowLimit,
+        },
+      }),
+    ]))
+      .map(res => res.data.rows || [])
+    
+    const analytics = {
+      // compute analytics from calcualting each url stats togethor
       period: {
-        totalClicks: periodRows.reduce((acc, row) => acc + (row.clicks || 0), 0),
-        totalImpressions: periodRows.reduce((acc, row) => acc + (row.impressions || 0), 0),
+        totalClicks: period!.reduce((acc, row) => acc + row.clicks!, 0),
+        totalImpressions: period!.reduce((acc, row) => acc + row.impressions!, 0),
       },
       prevPeriod: {
-        totalClicks: prevPeriodRows.reduce((acc, row) => acc + (row.clicks || 0), 0),
-        totalImpressions: prevPeriodRows.reduce((acc, row) => acc + (row.impressions || 0), 0),
+        totalClicks: prevPeriod!.reduce((acc, row) => acc + row.clicks!, 0),
+        totalImpressions: prevPeriod!.reduce((acc, row) => acc + row.impressions!, 0),
       },
-      graph: graphRows.map(row => ({
-        clicks: row.clicks || 0,
-        impressions: row.impressions || 0,
-        time: row.keys ? row.keys[0] : '', // 'date' dimension is the first key
-      })),
-    };
+    }
+    const normalizedSiteUrl = normalizeSiteUrl(siteUrl)
+    const indexedUrls = period!
+      .map(r => r.keys![0]) // doman property using www.
+      // strip out subdomains, hash and query
+      .filter(r => !r.includes('#') && !r.includes('?')
+      // fix www.
+      && r.startsWith(normalizedSiteUrl),
+      )
 
-    res.status(200).json(analytics);
+    const sitemaps = await api.sitemaps.list({
+      siteUrl,
+    })
+      .then(res => res.data.sitemap || [])
+    
+    const result = {
+      analytics,
+      sitemaps,
+      indexedUrls,
+      period: period.map((row) => {
+        const prevPeriodRow = prevPeriod.find(r => r.keys![0] === row.keys![0])
+        const url = new URL(row.keys![0])
+        return {
+          url: url.pathname,
+          clicks: row.clicks!,
+          prevClicks: prevPeriodRow ? prevPeriodRow.clicks! : 0,
+          clicksPercent: percentDifference(row.clicks!, prevPeriodRow?.clicks || 0),
+          impressions: row.impressions!,
+          impressionsPercent: percentDifference(row.impressions!, prevPeriodRow?.impressions || 0),
+          prevImpressions: prevPeriodRow ? prevPeriodRow.impressions! : 0,
+        }
+      }),
+      keywords: keywordsPeriod.map((row) => {
+        const prevPeriodRow = keywordsPrevPeriod.find(r => r.keys![0] === row.keys![0])
+        return {
+          keyword: row.keys![0],
+          // position and ctr
+          position: row.position!,
+          positionPercent: percentDifference(row.position!, prevPeriodRow?.position || 0),
+          prevPosition: prevPeriodRow ? prevPeriodRow.position! : 0,
+          ctr: row.ctr!,
+          ctrPercent: percentDifference(row.ctr!, prevPeriodRow?.ctr || 0),
+          prevCtr: prevPeriodRow ? prevPeriodRow.ctr! : 0,
+          clicks: row.clicks!,
+          impressions: row.impressions,
+        }
+      }),
+      graph: graph.map((row) => {
+        // fix key
+        return {
+          clicks: row.clicks!,
+          impressions: row.impressions!,
+          time: row.keys![0],
+          keys: undefined,
+        }
+      }),
+    }
+
+    console.log(`Analytics for ${siteUrl}:`, {
+      totalClicks: analytics.period.totalClicks,
+      totalImpressions: analytics.period.totalImpressions,
+      indexedUrls: indexedUrls.length,
+      sitemaps: sitemaps.length,
+    });
+
+    res.status(200).json(result);
   } catch (error: any) {
-    console.error('Error fetching Search Console analytics:', error);
-    res.status(error.statusCode || 500).json({ error: error.message || 'Internal Server Error' });
+    console.error('Error fetching Search Console analytics:', {
+      siteUrl: req.query.siteUrl,
+      error: error.message,
+      statusCode: error.statusCode,
+    });
+    res.status(error.statusCode || 500).json({ 
+      error: error.message || 'Internal Server Error',
+    });
   }
 }
