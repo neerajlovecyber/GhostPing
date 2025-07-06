@@ -9,7 +9,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const { tokens } = await oauth2Client.getToken(code as string);
     setTokenCookie(res, tokens);
-    res.redirect('/app/dashboard');
+    res.redirect('/dashboard');
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'OAuth2 error' });
   }
