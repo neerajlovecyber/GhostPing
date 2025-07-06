@@ -11,137 +11,92 @@ import { SiteCard } from "@/components/request-indexing/site-card";
 import { TrendPercentage } from "@/components/request-indexing/trend-percentage";
 import { SiteExpanded, GoogleSearchConsoleSite } from "@/types/request-indexing";
 
-// Mock data
-const mockSites: GoogleSearchConsoleSite[] = [
-  {
-    siteUrl: "https://nuxtseo.com",
-    permissionLevel: "siteOwner"
-  },
-  {
-    siteUrl: "sc-domain:example.com", 
-    permissionLevel: "siteOwner"
-  },
-  {
-    siteUrl: "https://mysite.com",
-    permissionLevel: "siteRestrictedUser"
-  }
-];
-
-const mockSiteData: SiteExpanded[] = [
-  {
-    siteUrl: "https://nuxtseo.com",
-    permissionLevel: "siteOwner",
-    analytics: {
-      period: {
-        totalClicks: 3471,
-        totalImpressions: 64141,
-      },
-      prevPeriod: {
-        totalClicks: 902,
-        totalImpressions: 14100,
-      },
-    },
-    nonIndexedPercent: 0.91,
-    indexedUrls: Array.from({ length: 109 }),
-    nonIndexedUrls: [],
-    graph: [
-      { clicks: 3, impressions: 59, time: '2023-08-14' },
-      { clicks: 7, impressions: 62, time: '2023-08-15' },
-      { clicks: 2, impressions: 60, time: '2023-08-16' },
-      { clicks: 1, impressions: 45, time: '2023-08-17' },
-      { clicks: 5, impressions: 70, time: '2023-08-18' },
-      { clicks: 8, impressions: 85, time: '2023-08-19' },
-      { clicks: 12, impressions: 95, time: '2023-08-20' },
-    ],
-  },
-  {
-    siteUrl: "sc-domain:example.com",
-    permissionLevel: "siteOwner", 
-    analytics: {
-      period: {
-        totalClicks: 1250,
-        totalImpressions: 28500,
-      },
-      prevPeriod: {
-        totalClicks: 890,
-        totalImpressions: 19200,
-      },
-    },
-    nonIndexedPercent: 0.76,
-    indexedUrls: Array.from({ length: 45 }),
-    nonIndexedUrls: [],
-    graph: [
-      { clicks: 2, impressions: 35, time: '2023-08-14' },
-      { clicks: 4, impressions: 42, time: '2023-08-15' },
-      { clicks: 3, impressions: 38, time: '2023-08-16' },
-      { clicks: 6, impressions: 55, time: '2023-08-17' },
-      { clicks: 5, impressions: 48, time: '2023-08-18' },
-      { clicks: 7, impressions: 62, time: '2023-08-19' },
-      { clicks: 9, impressions: 71, time: '2023-08-20' },
-    ],
-  },
-  {
-    siteUrl: "https://mysite.com",
-    permissionLevel: "siteRestrictedUser",
-    analytics: {
-      period: {
-        totalClicks: 567,
-        totalImpressions: 12300,
-      },
-      prevPeriod: {
-        totalClicks: 423,
-        totalImpressions: 9800,
-      },
-    },
-    nonIndexedPercent: 0.82,
-    indexedUrls: Array.from({ length: 23 }),
-    nonIndexedUrls: [],
-    graph: [
-      { clicks: 1, impressions: 18, time: '2023-08-14' },
-      { clicks: 2, impressions: 22, time: '2023-08-15' },
-      { clicks: 1, impressions: 19, time: '2023-08-16' },
-      { clicks: 3, impressions: 28, time: '2023-08-17' },
-      { clicks: 2, impressions: 24, time: '2023-08-18' },
-      { clicks: 4, impressions: 31, time: '2023-08-19' },
-      { clicks: 5, impressions: 35, time: '2023-08-20' },
-    ],
-  }
-];
 
 export default function DashboardPage() {
   const { user, isLoading, isAuthenticated } = useAuth();
-  const [sites, setSites] = useState<GoogleSearchConsoleSite[]>(mockSites);
+  const [sites, setSites] = useState<SiteExpanded[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [allSitesTotal, setAllSitesTotal] = useState<{
     period: { totalClicks: number; totalImpressions: number };
     prevPeriod: { totalClicks: number; totalImpressions: number };
   } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchSitesAndAnalytics = async () => {
+    setIsRefreshing(true);
+    setError(null);
+    try {
+      const sitesResponse = await fetch('/api/search-console/sites');
+      if (!sitesResponse.ok) {
+        throw new Error(`Failed to fetch sites: ${sitesResponse.statusText}`);
+      }
+      const fetchedSites: GoogleSearchConsoleSite[] = await sitesResponse.json();
+
+      const sitesWithAnalytics: SiteExpanded[] = await Promise.all(
+        fetchedSites.map(async (site) => {
+          const analyticsResponse = await fetch(`/api/search-console/analytics?siteUrl=${encodeURIComponent(site.siteUrl)}`);
+          if (!analyticsResponse.ok) {
+            console.warn(`Failed to fetch analytics for ${site.siteUrl}: ${analyticsResponse.statusText}`);
+            // Return site with default/empty analytics if fetching fails
+            return {
+              ...site,
+              analytics: { period: { totalClicks: 0, totalImpressions: 0 }, prevPeriod: { totalClicks: 0, totalImpressions: 0 } },
+              graph: [],
+              nonIndexedPercent: 0, // Default value
+              indexedUrls: [], // Default value
+              nonIndexedUrls: [], // Default value
+            };
+          }
+          const analyticsData = await analyticsResponse.json();
+          return {
+            ...site,
+            analytics: analyticsData.analytics || { period: { totalClicks: 0, totalImpressions: 0 }, prevPeriod: { totalClicks: 0, totalImpressions: 0 } },
+            graph: analyticsData.graph || [],
+            nonIndexedPercent: null, // Placeholder removed, needs actual calculation
+            indexedUrls: [], // Placeholder removed
+            nonIndexedUrls: [], // Placeholder removed
+          };
+        })
+      );
+      setSites(sitesWithAnalytics);
+      console.log('Fetched sites with analytics:', sitesWithAnalytics);
+
+      // Calculate totals from fetched data
+      let clicks = 0;
+      let impressions = 0;
+      let prevClicks = 0;
+      let prevImpressions = 0;
+
+      sitesWithAnalytics.forEach(site => {
+        clicks += site.analytics.period.totalClicks;
+        impressions += site.analytics.period.totalImpressions;
+        prevClicks += site.analytics.prevPeriod.totalClicks;
+        prevImpressions += site.analytics.prevPeriod.totalImpressions;
+      });
+
+      setAllSitesTotal({
+        period: { totalClicks: clicks, totalImpressions: impressions },
+        prevPeriod: { totalClicks: prevClicks, totalImpressions: prevImpressions },
+      });
+
+    } catch (err: any) {
+      console.error('Error fetching data:', err);
+      setError(err.message);
+      setSites([]); // Clear sites on error
+      setAllSitesTotal(null); // Clear totals on error
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   useEffect(() => {
-    // Calculate totals from mock data
-    let clicks = 0;
-    let impressions = 0;
-    let prevClicks = 0;
-    let prevImpressions = 0;
+    if (isAuthenticated) {
+      fetchSitesAndAnalytics();
+    }
+  }, [isAuthenticated]);
 
-    mockSiteData.forEach(site => {
-      clicks += site.analytics.period.totalClicks;
-      impressions += site.analytics.period.totalImpressions;
-      prevClicks += site.analytics.prevPeriod.totalClicks;
-      prevImpressions += site.analytics.prevPeriod.totalImpressions;
-    });
-
-    setAllSitesTotal({
-      period: { totalClicks: clicks, totalImpressions: impressions },
-      prevPeriod: { totalClicks: prevClicks, totalImpressions: prevImpressions },
-    });
-  }, []);
-
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    setIsRefreshing(false);
+  const handleRefresh = () => {
+    fetchSitesAndAnalytics();
   };
 
   // Show loading state
@@ -236,7 +191,6 @@ export default function DashboardPage() {
           <SiteCard 
             key={site.siteUrl} 
             site={site} 
-            mockData={mockSiteData[index]}
             className="max-w-full" 
           />
         ))}
@@ -245,8 +199,7 @@ export default function DashboardPage() {
           <CardBody className="flex items-center justify-center h-full text-center">
             <Button
               as={Link}
-              href="https://search.google.com/search-console"
-              isExternal
+              href="/api/auth/google"
               variant="light"
               size="lg"
               startContent={<PlusIcon className="w-5 h-5" />}
